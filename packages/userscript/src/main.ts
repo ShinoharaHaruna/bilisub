@@ -11,8 +11,10 @@
 // @grant        GM_getValue
 // @grant        unsafeWindow
 // @connect      api.bilibili.com
+// @connect      aisubtitle.hdslb.com
 // @connect      *.hdslb.com
 // @connect      *.bilivideo.com
+// @license      MIT
 // ==/UserScript==
 
 declare function GM_setValue(key: string, value: string): void;
