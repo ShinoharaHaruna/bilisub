@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BiliSub - 哔哩哔哩字幕下载工具
 // @namespace    https://github.com/ShinoharaHaruna/bilisub
-// @version      1.0.0
+// @version      1.0.1
 // @description  在哔哩哔哩页面直接下载字幕，支持AI字幕和普通字幕
 // @author       Shinohara Haruna
 // @match        *://*.bilibili.com/video/*
