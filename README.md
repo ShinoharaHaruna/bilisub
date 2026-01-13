@@ -10,7 +10,6 @@ BiliSub 是一个用于下载哔哩哔哩视频字幕的工具，支持 CLI 和�
 bilisub/
 ├── packages/
 │   ├── cli/              # Go CLI 工具
-│   ├── shared/           # TypeScript 共享库
 │   └── userscript/       # 油猴脚本
 ├── .yarnrc.yml           # Yarn Berry 配置
 ├── package.json          # 工作区配置
@@ -52,12 +51,6 @@ yarn dev BV1AAqGBhEAW  # 运行CLI
 - **语言**: Go
 - **功能**: 命令行下载字幕工具
 - **构建**: `go build`
-
-### @bilisub/shared
-
-- **语言**: TypeScript
-- **功能**: 共享类型定义和工具函数
-- **构建**: `tsc`
 
 ### @bilisub/userscript
 

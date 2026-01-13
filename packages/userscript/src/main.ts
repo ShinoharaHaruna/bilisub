@@ -11,7 +11,6 @@
 // @grant        GM_getValue
 // @grant        unsafeWindow
 // @connect      api.bilibili.com
-// @connect      aisubtitle.hdslb.com
 // @connect      *.hdslb.com
 // @connect      *.bilivideo.com
 // ==/UserScript==
@@ -39,7 +38,6 @@ interface GMXMLHttpRequestResponse {
   statusText: string;
 }
 
-// 内联共享代码，避免外部依赖
 interface VideoInfo {
   bvid: string;
   title: string;
