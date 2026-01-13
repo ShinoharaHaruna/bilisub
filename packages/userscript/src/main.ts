@@ -12,6 +12,8 @@
 // @grant        unsafeWindow
 // @connect      api.bilibili.com
 // @connect      aisubtitle.hdslb.com
+// @connect      *.hdslb.com
+// @connect      *.bilivideo.com
 // ==/UserScript==
 
 declare function GM_setValue(key: string, value: string): void;
@@ -114,6 +116,18 @@ interface PlayerConfigResp {
   };
 }
 
+interface NavResp {
+  code: number;
+  message: string;
+  ttl: number;
+  data: {
+    wbi_img?: {
+      img_url: string;
+      sub_url: string;
+    };
+  };
+}
+
 // 工具函数
 function sanitizeFilename(filename: string): string {
   return filename.replace(/[<>:"/\\|?*]/g, "_").trim();
@@ -124,11 +138,232 @@ function extractBVID(input: string): string {
   return match ? match[0] : "";
 }
 
+function md5(input: string): string {
+  function rotateLeft(value: number, shift: number) {
+    return (value << shift) | (value >>> (32 - shift));
+  }
+
+  function addUnsigned(x: number, y: number) {
+    const x4 = x & 0x40000000;
+    const y4 = y & 0x40000000;
+    const x8 = x & 0x80000000;
+    const y8 = y & 0x80000000;
+    const result = (x & 0x3fffffff) + (y & 0x3fffffff);
+    if (x4 & y4) {
+      return result ^ 0x80000000 ^ x8 ^ y8;
+    }
+    if (x4 | y4) {
+      if (result & 0x40000000) {
+        return result ^ 0xc0000000 ^ x8 ^ y8;
+      }
+      return result ^ 0x40000000 ^ x8 ^ y8;
+    }
+    return result ^ x8 ^ y8;
+  }
+
+  function F(x: number, y: number, z: number) {
+    return (x & y) | (~x & z);
+  }
+  function G(x: number, y: number, z: number) {
+    return (x & z) | (y & ~z);
+  }
+  function H(x: number, y: number, z: number) {
+    return x ^ y ^ z;
+  }
+  function I(x: number, y: number, z: number) {
+    return y ^ (x | ~z);
+  }
+
+  function FF(
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    x: number,
+    s: number,
+    ac: number
+  ) {
+    a = addUnsigned(a, addUnsigned(addUnsigned(F(b, c, d), x), ac));
+    return addUnsigned(rotateLeft(a, s), b);
+  }
+
+  function GG(
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    x: number,
+    s: number,
+    ac: number
+  ) {
+    a = addUnsigned(a, addUnsigned(addUnsigned(G(b, c, d), x), ac));
+    return addUnsigned(rotateLeft(a, s), b);
+  }
+
+  function HH(
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    x: number,
+    s: number,
+    ac: number
+  ) {
+    a = addUnsigned(a, addUnsigned(addUnsigned(H(b, c, d), x), ac));
+    return addUnsigned(rotateLeft(a, s), b);
+  }
+
+  function II(
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    x: number,
+    s: number,
+    ac: number
+  ) {
+    a = addUnsigned(a, addUnsigned(addUnsigned(I(b, c, d), x), ac));
+    return addUnsigned(rotateLeft(a, s), b);
+  }
+
+  function convertToWordArray(str: string) {
+    const msgLength = str.length;
+    const wordArray: number[] = [];
+    let i: number;
+    for (i = 0; i < msgLength; i++) {
+      const byte = str.charCodeAt(i);
+      wordArray[i >> 2] = wordArray[i >> 2] || 0;
+      wordArray[i >> 2] |= byte << ((i % 4) * 8);
+    }
+    wordArray[i >> 2] = wordArray[i >> 2] || 0;
+    wordArray[i >> 2] |= 0x80 << ((i % 4) * 8);
+    wordArray[(((msgLength + 64) >>> 9) << 4) + 14] = msgLength * 8;
+    wordArray[(((msgLength + 64) >>> 9) << 4) + 15] = 0;
+    return wordArray;
+  }
+
+  function wordToHex(value: number) {
+    let hex = "";
+    for (let i = 0; i <= 3; i++) {
+      const byte = (value >>> (i * 8)) & 255;
+      const temp = "0" + byte.toString(16);
+      hex += temp.slice(temp.length - 2);
+    }
+    return hex;
+  }
+
+  function utf8Encode(str: string) {
+    return unescape(encodeURIComponent(str));
+  }
+
+  const x = convertToWordArray(utf8Encode(input));
+  let a = 0x67452301;
+  let b = 0xefcdab89;
+  let c = 0x98badcfe;
+  let d = 0x10325476;
+
+  for (let k = 0; k < x.length; k += 16) {
+    const aa = a;
+    const bb = b;
+    const cc = c;
+    const dd = d;
+
+    a = FF(a, b, c, d, x[k + 0], 7, 0xd76aa478);
+    d = FF(d, a, b, c, x[k + 1], 12, 0xe8c7b756);
+    c = FF(c, d, a, b, x[k + 2], 17, 0x242070db);
+    b = FF(b, c, d, a, x[k + 3], 22, 0xc1bdceee);
+    a = FF(a, b, c, d, x[k + 4], 7, 0xf57c0faf);
+    d = FF(d, a, b, c, x[k + 5], 12, 0x4787c62a);
+    c = FF(c, d, a, b, x[k + 6], 17, 0xa8304613);
+    b = FF(b, c, d, a, x[k + 7], 22, 0xfd469501);
+    a = FF(a, b, c, d, x[k + 8], 7, 0x698098d8);
+    d = FF(d, a, b, c, x[k + 9], 12, 0x8b44f7af);
+    c = FF(c, d, a, b, x[k + 10], 17, 0xffff5bb1);
+    b = FF(b, c, d, a, x[k + 11], 22, 0x895cd7be);
+    a = FF(a, b, c, d, x[k + 12], 7, 0x6b901122);
+    d = FF(d, a, b, c, x[k + 13], 12, 0xfd987193);
+    c = FF(c, d, a, b, x[k + 14], 17, 0xa679438e);
+    b = FF(b, c, d, a, x[k + 15], 22, 0x49b40821);
+
+    a = GG(a, b, c, d, x[k + 1], 5, 0xf61e2562);
+    d = GG(d, a, b, c, x[k + 6], 9, 0xc040b340);
+    c = GG(c, d, a, b, x[k + 11], 14, 0x265e5a51);
+    b = GG(b, c, d, a, x[k + 0], 20, 0xe9b6c7aa);
+    a = GG(a, b, c, d, x[k + 5], 5, 0xd62f105d);
+    d = GG(d, a, b, c, x[k + 10], 9, 0x02441453);
+    c = GG(c, d, a, b, x[k + 15], 14, 0xd8a1e681);
+    b = GG(b, c, d, a, x[k + 4], 20, 0xe7d3fbc8);
+    a = GG(a, b, c, d, x[k + 9], 5, 0x21e1cde6);
+    d = GG(d, a, b, c, x[k + 14], 9, 0xc33707d6);
+    c = GG(c, d, a, b, x[k + 3], 14, 0xf4d50d87);
+    b = GG(b, c, d, a, x[k + 8], 20, 0x455a14ed);
+    a = GG(a, b, c, d, x[k + 13], 5, 0xa9e3e905);
+    d = GG(d, a, b, c, x[k + 2], 9, 0xfcefa3f8);
+    c = GG(c, d, a, b, x[k + 7], 14, 0x676f02d9);
+    b = GG(b, c, d, a, x[k + 12], 20, 0x8d2a4c8a);
+
+    a = HH(a, b, c, d, x[k + 5], 4, 0xfffa3942);
+    d = HH(d, a, b, c, x[k + 8], 11, 0x8771f681);
+    c = HH(c, d, a, b, x[k + 11], 16, 0x6d9d6122);
+    b = HH(b, c, d, a, x[k + 14], 23, 0xfde5380c);
+    a = HH(a, b, c, d, x[k + 1], 4, 0xa4beea44);
+    d = HH(d, a, b, c, x[k + 4], 11, 0x4bdecfa9);
+    c = HH(c, d, a, b, x[k + 7], 16, 0xf6bb4b60);
+    b = HH(b, c, d, a, x[k + 10], 23, 0xbebfbc70);
+    a = HH(a, b, c, d, x[k + 13], 4, 0x289b7ec6);
+    d = HH(d, a, b, c, x[k + 0], 11, 0xeaa127fa);
+    c = HH(c, d, a, b, x[k + 3], 16, 0xd4ef3085);
+    b = HH(b, c, d, a, x[k + 6], 23, 0x04881d05);
+    a = HH(a, b, c, d, x[k + 9], 4, 0xd9d4d039);
+    d = HH(d, a, b, c, x[k + 12], 11, 0xe6db99e5);
+    c = HH(c, d, a, b, x[k + 15], 16, 0x1fa27cf8);
+    b = HH(b, c, d, a, x[k + 2], 23, 0xc4ac5665);
+
+    a = II(a, b, c, d, x[k + 0], 6, 0xf4292244);
+    d = II(d, a, b, c, x[k + 7], 10, 0x432aff97);
+    c = II(c, d, a, b, x[k + 14], 15, 0xab9423a7);
+    b = II(b, c, d, a, x[k + 5], 21, 0xfc93a039);
+    a = II(a, b, c, d, x[k + 12], 6, 0x655b59c3);
+    d = II(d, a, b, c, x[k + 3], 10, 0x8f0ccc92);
+    c = II(c, d, a, b, x[k + 10], 15, 0xffeff47d);
+    b = II(b, c, d, a, x[k + 1], 21, 0x85845dd1);
+    a = II(a, b, c, d, x[k + 8], 6, 0x6fa87e4f);
+    d = II(d, a, b, c, x[k + 15], 10, 0xfe2ce6e0);
+    c = II(c, d, a, b, x[k + 6], 15, 0xa3014314);
+    b = II(b, c, d, a, x[k + 13], 21, 0x4e0811a1);
+    a = II(a, b, c, d, x[k + 4], 6, 0xf7537e82);
+    d = II(d, a, b, c, x[k + 11], 10, 0xbd3af235);
+    c = II(c, d, a, b, x[k + 2], 15, 0x2ad7d2bb);
+    b = II(b, c, d, a, x[k + 9], 21, 0xeb86d391);
+
+    a = addUnsigned(a, aa);
+    b = addUnsigned(b, bb);
+    c = addUnsigned(c, cc);
+    d = addUnsigned(d, dd);
+  }
+
+  return (
+    wordToHex(a) +
+    wordToHex(b) +
+    wordToHex(c) +
+    wordToHex(d)
+  ).toLowerCase();
+}
+
 // B站 API 客户端
 class BilibiliAPI {
   private static readonly BASE_URL = "https://api.bilibili.com";
   private static readonly USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
+  private static readonly MIXIN_KEY_ENC_TAB = [
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
+    33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
+    61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
+    36, 20, 34, 44, 52,
+  ];
+  private static wbiMixinKey: string | null = null;
+  private static wbiMixinKeyFetchedAt = 0;
+  private static readonly WBI_CACHE_TTL = 10 * 60 * 1000;
 
   static async getVideoInfo(bvid: string): Promise<VideoInfo> {
     const url = `${this.BASE_URL}/x/web-interface/view?bvid=${bvid}`;
@@ -153,7 +388,11 @@ class BilibiliAPI {
     bvid: string,
     sessdata?: string
   ): Promise<SubtitleItem> {
-    const url = `${this.BASE_URL}/x/player/v2?cid=${cid}&bvid=${bvid}`;
+    const url = await this.buildWbiUrl(
+      "/x/player/wbi/v2",
+      { cid, bvid },
+      sessdata
+    );
 
     const data = await this.requestJson<PlayerConfigResp>(url, sessdata);
 
@@ -182,55 +421,102 @@ class BilibiliAPI {
     return selectedSub;
   }
 
-  static async getSubtitle(subtitleURL: string): Promise<BilibiliSubtitle> {
+  static async getSubtitle(
+    subtitleURL: string,
+    sessdata?: string
+  ): Promise<BilibiliSubtitle> {
     const url = subtitleURL.startsWith("//")
       ? `https:${subtitleURL}`
       : subtitleURL;
+    const host = (() => {
+      try {
+        return new URL(url).hostname;
+      } catch {
+        return url;
+      }
+    })();
 
     if (typeof GM_xmlhttpRequest === "function") {
       return new Promise<BilibiliSubtitle>((resolve, reject) => {
-        GM_xmlhttpRequest({
-          method: "GET",
-          url,
-          headers: {
-            "User-Agent": this.USER_AGENT,
-            Referer: "https://www.bilibili.com",
-            Accept: "application/json",
-          },
-          responseType: "text",
-          onload: (response) => {
-            if (response.status >= 200 && response.status < 300) {
-              try {
-                const parsed = JSON.parse(response.responseText);
-                resolve(parsed);
-              } catch (error) {
-                reject(error);
-              }
-            } else {
-              reject(
-                new Error(
-                  `请求失败，状态码：${response.status} ${response.statusText}`
-                )
-              );
-            }
-          },
-          onerror: (response) => {
+        let settled = false;
+        const finish = (handler: () => void) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          handler();
+        };
+
+        const timer = window.setTimeout(() => {
+          finish(() =>
             reject(
               new Error(
-                `请求失败，状态码：${response.status} ${
-                  response.statusText || ""
-                }`.trim()
+                `请求 ${host} 超时或被拦截，请确认脚本已允许访问该域名（@connect）。`
               )
-            );
-          },
-          ontimeout: () => {
-            reject(new Error("请求超时"));
-          },
-        });
+            )
+          );
+        }, 10000);
+
+        try {
+          GM_xmlhttpRequest({
+            method: "GET",
+            url,
+            headers: {
+              "User-Agent": this.USER_AGENT,
+              Referer: "https://www.bilibili.com",
+              Accept: "application/json",
+              ...(sessdata ? { Cookie: `SESSDATA=${sessdata}` } : {}),
+            },
+            responseType: "text",
+            onload: (response) => {
+              finish(() => {
+                if (response.status >= 200 && response.status < 300) {
+                  try {
+                    const parsed = JSON.parse(response.responseText);
+                    resolve(parsed);
+                  } catch (error) {
+                    reject(error);
+                  }
+                } else {
+                  reject(
+                    new Error(
+                      `请求失败，状态码：${response.status} ${response.statusText}`
+                    )
+                  );
+                }
+              });
+            },
+            onerror: (response) => {
+              finish(() =>
+                reject(
+                  new Error(
+                    `请求失败，状态码：${response.status} ${
+                      response.statusText || ""
+                    }`.trim()
+                  )
+                )
+              );
+            },
+            ontimeout: () => {
+              finish(() => reject(new Error("请求超时")));
+            },
+          });
+        } catch (error) {
+          finish(() =>
+            reject(
+              new Error(
+                `Tampermonkey 拒绝访问 ${host}，请在脚本头部添加对应 @connect 并重新安装。原始错误: ${
+                  error instanceof Error ? error.message : String(error)
+                }`
+              )
+            )
+          );
+        }
       });
     }
 
-    const response = await this.fetchWithHeaders(url);
+    const response = await this.fetchWithHeaders(url, sessdata);
     const data: BilibiliSubtitle = await response.json();
 
     return data;
@@ -241,7 +527,11 @@ class BilibiliAPI {
     bvid: string,
     sessdata?: string
   ): Promise<SubtitleItem[]> {
-    const url = `${this.BASE_URL}/x/player/v2?cid=${cid}&bvid=${bvid}`;
+    const url = await this.buildWbiUrl(
+      "/x/player/wbi/v2",
+      { cid, bvid },
+      sessdata
+    );
 
     console.log(
       "Fetching subtitles for cid:",
@@ -264,12 +554,30 @@ class BilibiliAPI {
     return data.data.subtitle.subtitles;
   }
 
-  private static async fetchWithHeaders(url: string): Promise<Response> {
+  private static async buildWbiUrl(
+    path: string,
+    params: Record<string, string | number>,
+    sessdata?: string
+  ): Promise<string> {
+    const query = await this.getSignedQuery(params, sessdata);
+    return `${this.BASE_URL}${path}?${query}`;
+  }
+
+  private static async fetchWithHeaders(
+    url: string,
+    sessdata?: string
+  ): Promise<Response> {
+    const headers: Record<string, string> = {
+      "User-Agent": this.USER_AGENT,
+      Referer: "https://www.bilibili.com",
+    };
+
+    if (sessdata) {
+      headers["Cookie"] = `SESSDATA=${sessdata}`;
+    }
+
     return fetch(url, {
-      headers: {
-        "User-Agent": this.USER_AGENT,
-        Referer: "https://www.bilibili.com",
-      },
+      headers,
       credentials: "include",
     });
   }
@@ -339,6 +647,71 @@ class BilibiliAPI {
 
     return (await response.json()) as T;
   }
+
+  private static sanitizeParamValue(value: string | number): string {
+    return String(value).replace(/[!'()*]/g, "");
+  }
+
+  private static async getSignedQuery(
+    params: Record<string, string | number>,
+    sessdata?: string
+  ): Promise<string> {
+    const mixinKey = await this.ensureWbiMixinKey(sessdata);
+    const entries: [string, string][] = Object.entries(params).map(
+      ([key, value]) => [key, this.sanitizeParamValue(value)]
+    );
+    entries.push(["wts", String(Math.floor(Date.now() / 1000))]);
+    entries.sort((a, b) => a[0].localeCompare(b[0]));
+    const query = entries
+      .map(
+        ([key, value]) =>
+          `${encodeURIComponent(key)}=${encodeURIComponent(value)}`
+      )
+      .join("&");
+    const wRid = md5(query + mixinKey);
+    return `${query}&w_rid=${wRid}`;
+  }
+
+  private static async ensureWbiMixinKey(sessdata?: string): Promise<string> {
+    const now = Date.now();
+    if (
+      this.wbiMixinKey &&
+      now - this.wbiMixinKeyFetchedAt < this.WBI_CACHE_TTL
+    ) {
+      return this.wbiMixinKey;
+    }
+
+    const navResp = await this.requestJson<NavResp>(
+      `${this.BASE_URL}/x/web-interface/nav`,
+      sessdata
+    );
+    const imgKey = this.extractKeyFromUrl(navResp.data.wbi_img?.img_url);
+    const subKey = this.extractKeyFromUrl(navResp.data.wbi_img?.sub_url);
+    if (!imgKey || !subKey) {
+      throw new Error("无法获取 WBI 密钥，请稍后重试");
+    }
+
+    const rawKey = `${imgKey}${subKey}`;
+    const mixinKey = this.deriveMixinKey(rawKey);
+    this.wbiMixinKey = mixinKey;
+    this.wbiMixinKeyFetchedAt = now;
+    return mixinKey;
+  }
+
+  private static deriveMixinKey(rawKey: string): string {
+    const chars = this.MIXIN_KEY_ENC_TAB.map((idx) => rawKey[idx] || "").join(
+      ""
+    );
+    return chars.slice(0, 32);
+  }
+
+  private static extractKeyFromUrl(url?: string): string | null {
+    if (!url) {
+      return null;
+    }
+    const match = url.match(/\/([^/]+)\.(?:png|jpg|jpeg)$/i);
+    return match ? match[1] : null;
+  }
 }
 
 class BiliSub {
@@ -354,14 +727,25 @@ class BiliSub {
   private subtitleTimelineContainer: HTMLElement | null = null;
   private actionDownloadBtn: HTMLButtonElement | null = null;
   private actionSummaryBtn: HTMLButtonElement | null = null;
+  private actionRefreshBtn: HTMLButtonElement | null = null;
   private subtitleCache: Map<string, BilibiliSubtitle> = new Map();
   private availableSubtitles: SubtitleItem[] = [];
   private currentSubtitleItem: SubtitleItem | null = null;
   private currentSubtitleData: BilibiliSubtitle | null = null;
+  private locationSignature: string = "";
+  private videoChangeWatcher: number | null = null;
+  private isHandlingVideoChange = false;
+  private isRefreshingSubtitles = false;
+  private subtitleRetryTimer: number | null = null;
+  private readonly subtitleRefreshDelay = 1200;
+  private subtitleRetryAttempts = 0;
+  private readonly maxSubtitleRetryAttempts = 3;
+  private readonly subtitleRetryDelay = 1500;
 
   constructor() {
     this.pageWindow =
       typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+    this.locationSignature = this.buildVideoSignature();
     this.registerSessdataBridge();
     this.init();
   }
@@ -400,6 +784,8 @@ class BiliSub {
     setInterval(() => {
       this.setupUI();
     }, 2000);
+
+    this.startVideoChangeWatcher();
   }
 
   private getSessdata(): string | undefined {
@@ -664,6 +1050,89 @@ class BiliSub {
     return wrap;
   }
 
+  private delay(ms: number) {
+    return new Promise<void>((resolve) => {
+      window.setTimeout(resolve, ms);
+    });
+  }
+
+  private async waitForSubtitlePreparation() {
+    await this.delay(this.subtitleRefreshDelay);
+  }
+
+  private startVideoChangeWatcher() {
+    if (this.videoChangeWatcher !== null) {
+      return;
+    }
+
+    this.videoChangeWatcher = window.setInterval(() => {
+      const currentSignature = this.buildVideoSignature();
+      if (currentSignature !== this.locationSignature) {
+        console.log(
+          "[BiliSub] 检测到视频 URL 变化:",
+          this.locationSignature,
+          "→",
+          currentSignature
+        );
+        this.locationSignature = currentSignature;
+        this.handleVideoChange();
+      }
+    }, 1500);
+  }
+
+  private buildVideoSignature(): string {
+    return `${window.location.pathname}${window.location.search}`;
+  }
+
+  private async handleVideoChange() {
+    if (this.isHandlingVideoChange) {
+      return;
+    }
+    this.isHandlingVideoChange = true;
+
+    try {
+      const newBvid = extractBVID(window.location.href);
+      if (!newBvid) {
+        console.warn("[BiliSub] 无法从当前 URL 解析 BV 号，跳过字幕刷新");
+        return;
+      }
+
+      const partIndex = this.getCurrentP();
+      const bvidChanged = newBvid !== this.bvid;
+      this.bvid = newBvid;
+
+      if (bvidChanged || !this.videoInfo || this.videoInfo.bvid !== this.bvid) {
+        this.videoInfo = await this.getVideoInfo();
+      }
+
+      if (!this.videoInfo) {
+        return;
+      }
+
+      this.cid = partIndex
+        ? this.videoInfo.pages[partIndex - 1]?.cid || this.videoInfo.cid
+        : this.videoInfo.cid;
+
+      this.subtitleCache.clear();
+      this.availableSubtitles = [];
+      this.currentSubtitleItem = null;
+      this.currentSubtitleData = null;
+
+      const panelVisible =
+        this.subtitlePanel?.classList.contains("bilisub-panel-visible") ??
+        false;
+
+      if (panelVisible) {
+        await this.refreshSubtitles(false);
+        this.showToast("检测到视频切换，字幕已刷新");
+      }
+    } catch (error) {
+      console.error("处理视频切换失败:", error);
+    } finally {
+      this.isHandlingVideoChange = false;
+    }
+  }
+
   private async toggleSubtitlePanel() {
     if (!this.ensureSessdataAvailable()) {
       this.promptSessdataGuide();
@@ -688,7 +1157,7 @@ class BiliSub {
     }
 
     this.subtitlePanel.classList.add("bilisub-panel-visible");
-    await this.loadSubtitlePanelData();
+    await this.refreshSubtitles(false);
   }
 
   private createSubtitlePanel() {
@@ -706,6 +1175,12 @@ class BiliSub {
 
     const actions = document.createElement("div");
     actions.className = "bilisub-panel-actions";
+
+    this.actionRefreshBtn = document.createElement("button");
+    this.actionRefreshBtn.textContent = "刷新";
+    this.actionRefreshBtn.addEventListener("click", () =>
+      this.refreshSubtitles(true)
+    );
 
     this.actionSummaryBtn = document.createElement("button");
     this.actionSummaryBtn.textContent = "AI 总结";
@@ -726,6 +1201,7 @@ class BiliSub {
       panel.classList.remove("bilisub-panel-visible");
     });
 
+    actions.appendChild(this.actionRefreshBtn);
     actions.appendChild(this.actionSummaryBtn);
     actions.appendChild(this.actionDownloadBtn);
     actions.appendChild(closeBtn);
@@ -750,6 +1226,52 @@ class BiliSub {
 
     document.body.appendChild(panel);
     this.subtitlePanel = panel;
+  }
+
+  private async refreshSubtitles(showToastOnSuccess: boolean) {
+    if (!this.subtitlePanel || this.isRefreshingSubtitles) {
+      if (this.isRefreshingSubtitles && showToastOnSuccess) {
+        this.showToast("字幕刷新中，请稍候...");
+      }
+      return;
+    }
+
+    this.isRefreshingSubtitles = true;
+    if (this.actionRefreshBtn) {
+      this.actionRefreshBtn.disabled = true;
+      this.actionRefreshBtn.textContent = "刷新中...";
+    }
+
+    try {
+      if (!this.videoInfo || this.videoInfo.bvid !== this.bvid) {
+        this.videoInfo = await this.getVideoInfo();
+      }
+
+      if (!this.videoInfo) {
+        throw new Error("无法获取视频信息");
+      }
+
+      const partIndex = this.getCurrentP();
+      this.cid = partIndex
+        ? this.videoInfo.pages[partIndex - 1]?.cid || this.videoInfo.cid
+        : this.videoInfo.cid;
+
+      this.subtitleCache.clear();
+      await this.loadSubtitlePanelData();
+
+      if (showToastOnSuccess) {
+        this.showToast("字幕已刷新");
+      }
+    } catch (error) {
+      console.error("刷新字幕失败:", error);
+      this.showToast("刷新字幕失败，请稍后重试");
+    } finally {
+      this.isRefreshingSubtitles = false;
+      if (this.actionRefreshBtn) {
+        this.actionRefreshBtn.disabled = false;
+        this.actionRefreshBtn.textContent = "刷新";
+      }
+    }
   }
 
   private ensurePanelStyles() {
@@ -892,10 +1414,18 @@ class BiliSub {
 
     this.renderSubtitleTracks(subtitles);
 
+    const previousSelectedId = this.currentSubtitleItem?.id;
     const defaultSubtitle =
-      this.currentSubtitleItem ??
+      (previousSelectedId &&
+        subtitles.find((s) => s.id === previousSelectedId)) ??
       subtitles.find((s) => s.lan === "ai-zh") ??
       subtitles[0];
+
+    if (!defaultSubtitle) {
+      this.subtitleTimelineContainer.innerHTML =
+        '<div class="bilisub-empty">暂无字幕内容</div>';
+      return;
+    }
 
     await this.selectSubtitleTrack(defaultSubtitle);
   }
@@ -910,6 +1440,7 @@ class BiliSub {
     subtitles.forEach((subtitle) => {
       const button = document.createElement("button");
       button.className = "bilisub-track-item";
+      button.dataset.subtitleId = String(subtitle.id);
 
       const isAI = subtitle.lan === "ai-zh";
       button.textContent = `${subtitle.lan_doc || subtitle.lan}${
@@ -935,12 +1466,10 @@ class BiliSub {
         .querySelectorAll(".bilisub-track-item")
         .forEach((el) => {
           const button = el as HTMLButtonElement;
-          const isTarget =
-            button.textContent ===
-            `${subtitle.lan_doc || subtitle.lan}${
-              subtitle.lan === "ai-zh" ? " · AI" : ""
-            }`;
-          button.classList.toggle("active", isTarget);
+          button.classList.toggle(
+            "active",
+            button.dataset.subtitleId === String(subtitle.id)
+          );
         });
     }
 
@@ -957,12 +1486,28 @@ class BiliSub {
     }
 
     try {
-      const data = await BilibiliAPI.getSubtitle(subtitle.subtitle_url);
+      console.log(
+        "[BiliSub] 准备拉取字幕文件:",
+        subtitle.subtitle_url,
+        "lan:",
+        subtitle.lan
+      );
+      const data = await BilibiliAPI.getSubtitle(
+        subtitle.subtitle_url,
+        this.sessdata
+      );
       this.subtitleCache.set(cacheKey, data);
       this.currentSubtitleData = data;
       this.renderSubtitleTimeline();
     } catch (error) {
-      console.error("加载字幕失败:", error);
+      console.error(
+        "加载字幕失败:",
+        error,
+        "url:",
+        subtitle.subtitle_url,
+        "lan:",
+        subtitle.lan
+      );
       if (this.subtitleTimelineContainer) {
         this.subtitleTimelineContainer.innerHTML =
           '<div class="bilisub-empty">加载失败，请重试</div>';

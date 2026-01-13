@@ -6,7 +6,7 @@ BiliSub 是一个用于下载哔哩哔哩视频字幕的工具，支持 CLI 和�
 
 ## 🏗️ 项目结构
 
-```
+```bash
 bilisub/
 ├── packages/
 │   ├── cli/              # Go CLI 工具
