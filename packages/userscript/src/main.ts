@@ -349,6 +349,15 @@ class BiliSub {
   private downloadBtn: HTMLElement | null = null;
   private readonly sessdataStorageKey = "bilisub_sessdata";
   private readonly pageWindow: Window & typeof globalThis;
+  private subtitlePanel: HTMLElement | null = null;
+  private subtitleTracksContainer: HTMLElement | null = null;
+  private subtitleTimelineContainer: HTMLElement | null = null;
+  private actionDownloadBtn: HTMLButtonElement | null = null;
+  private actionSummaryBtn: HTMLButtonElement | null = null;
+  private subtitleCache: Map<string, BilibiliSubtitle> = new Map();
+  private availableSubtitles: SubtitleItem[] = [];
+  private currentSubtitleItem: SubtitleItem | null = null;
+  private currentSubtitleData: BilibiliSubtitle | null = null;
 
   constructor() {
     this.pageWindow =
@@ -632,9 +641,9 @@ class BiliSub {
     wrap.className = "toolbar-left-item-wrap";
 
     const button = document.createElement("div");
-    button.title = "下载字幕";
+    button.title = "字幕面板";
     button.className = "video-download video-toolbar-left-item";
-    button.addEventListener("click", () => this.downloadSubtitle());
+    button.addEventListener("click", () => this.toggleSubtitlePanel());
 
     const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     icon.setAttribute("width", "28");
@@ -646,7 +655,7 @@ class BiliSub {
 
     const text = document.createElement("span");
     text.className = "video-download-info video-toolbar-item-text";
-    text.textContent = "下载字幕";
+    text.textContent = "字幕";
 
     button.appendChild(icon);
     button.appendChild(text);
@@ -655,33 +664,392 @@ class BiliSub {
     return wrap;
   }
 
-  private async downloadSubtitle() {
-    console.log("开始下载字幕...");
-
+  private async toggleSubtitlePanel() {
     if (!this.ensureSessdataAvailable()) {
       this.promptSessdataGuide();
       return;
     }
 
+    if (!this.subtitlePanel) {
+      this.createSubtitlePanel();
+    }
+
+    if (!this.subtitlePanel) {
+      return;
+    }
+
+    const isVisible = this.subtitlePanel.classList.contains(
+      "bilisub-panel-visible"
+    );
+
+    if (isVisible) {
+      this.subtitlePanel.classList.remove("bilisub-panel-visible");
+      return;
+    }
+
+    this.subtitlePanel.classList.add("bilisub-panel-visible");
+    await this.loadSubtitlePanelData();
+  }
+
+  private createSubtitlePanel() {
+    this.ensurePanelStyles();
+
+    const panel = document.createElement("div");
+    panel.id = "bilisub-panel";
+    panel.className = "bilisub-panel";
+
+    const header = document.createElement("div");
+    header.className = "bilisub-panel-header";
+
+    const title = document.createElement("span");
+    title.textContent = "字幕";
+
+    const actions = document.createElement("div");
+    actions.className = "bilisub-panel-actions";
+
+    this.actionSummaryBtn = document.createElement("button");
+    this.actionSummaryBtn.textContent = "AI 总结";
+    this.actionSummaryBtn.addEventListener("click", () =>
+      this.showSummaryPlaceholder()
+    );
+
+    this.actionDownloadBtn = document.createElement("button");
+    this.actionDownloadBtn.textContent = "下载";
+    this.actionDownloadBtn.addEventListener("click", () =>
+      this.downloadCurrentSubtitle()
+    );
+
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "×";
+    closeBtn.className = "bilisub-close-btn";
+    closeBtn.addEventListener("click", () => {
+      panel.classList.remove("bilisub-panel-visible");
+    });
+
+    actions.appendChild(this.actionSummaryBtn);
+    actions.appendChild(this.actionDownloadBtn);
+    actions.appendChild(closeBtn);
+
+    header.appendChild(title);
+    header.appendChild(actions);
+
+    const content = document.createElement("div");
+    content.className = "bilisub-panel-content";
+
+    this.subtitleTracksContainer = document.createElement("div");
+    this.subtitleTracksContainer.className = "bilisub-tracks";
+
+    this.subtitleTimelineContainer = document.createElement("div");
+    this.subtitleTimelineContainer.className = "bilisub-timeline";
+
+    content.appendChild(this.subtitleTracksContainer);
+    content.appendChild(this.subtitleTimelineContainer);
+
+    panel.appendChild(header);
+    panel.appendChild(content);
+
+    document.body.appendChild(panel);
+    this.subtitlePanel = panel;
+  }
+
+  private ensurePanelStyles() {
+    if (document.getElementById("bilisub-panel-styles")) {
+      return;
+    }
+
+    const style = document.createElement("style");
+    style.id = "bilisub-panel-styles";
+    style.textContent = `
+      .bilisub-panel {
+        position: fixed;
+        top: 90px;
+        right: 24px;
+        width: 360px;
+        height: min(70vh, 520px);
+        background: rgba(19, 21, 25, 0.96);
+        color: #f5f5f5;
+        border-radius: 16px;
+        box-shadow: 0 24px 50px rgba(0, 0, 0, 0.35);
+        transform: translateX(110%);
+        opacity: 0;
+        transition: transform 0.25s ease, opacity 0.25s ease;
+        display: flex;
+        flex-direction: column;
+        z-index: 1000000;
+        backdrop-filter: blur(10px);
+      }
+      .bilisub-panel-visible {
+        transform: translateX(0);
+        opacity: 1;
+      }
+      .bilisub-panel-header {
+        padding: 16px 20px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        font-size: 16px;
+        font-weight: 600;
+      }
+      .bilisub-panel-actions button {
+        margin-left: 8px;
+        background: rgba(255, 255, 255, 0.08);
+        border: none;
+        color: #fff;
+        border-radius: 999px;
+        padding: 6px 14px;
+        cursor: pointer;
+        font-size: 13px;
+        transition: background 0.2s ease;
+      }
+      .bilisub-panel-actions button:hover {
+        background: rgba(255, 255, 255, 0.18);
+      }
+      .bilisub-close-btn {
+        font-size: 18px;
+        line-height: 1;
+      }
+      .bilisub-panel-content {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 140px 1fr;
+        overflow: hidden;
+      }
+      .bilisub-tracks {
+        border-right: 1px solid rgba(255, 255, 255, 0.08);
+        padding: 12px;
+        overflow-y: auto;
+      }
+      .bilisub-track-item {
+        display: block;
+        width: 100%;
+        padding: 10px 12px;
+        margin-bottom: 8px;
+        border-radius: 10px;
+        border: 1px solid transparent;
+        background: rgba(255, 255, 255, 0.05);
+        color: inherit;
+        text-align: left;
+        cursor: pointer;
+        font-size: 13px;
+        transition: all 0.2s ease;
+      }
+      .bilisub-track-item:hover {
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .bilisub-track-item.active {
+        border-color: #00aeec;
+        background: rgba(0, 174, 236, 0.15);
+      }
+      .bilisub-timeline {
+        padding: 12px 18px 18px;
+        overflow-y: auto;
+      }
+      .bilisub-line {
+        margin-bottom: 10px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      }
+      .bilisub-line-time {
+        font-size: 12px;
+        color: #8aa0b8;
+        margin-bottom: 4px;
+        letter-spacing: 0.5px;
+      }
+      .bilisub-line-text {
+        font-size: 14px;
+        line-height: 1.5;
+        color: #f2f2f2;
+      }
+      .bilisub-empty {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.7);
+        text-align: center;
+        margin-top: 20px;
+      }
+    `;
+
+    document.head.appendChild(style);
+  }
+
+  private async loadSubtitlePanelData() {
+    if (!this.subtitleTracksContainer || !this.subtitleTimelineContainer) {
+      return;
+    }
+
+    this.subtitleTracksContainer.innerHTML =
+      '<div class="bilisub-empty">加载字幕列表...</div>';
+
+    const subtitles = await this.getSubtitleList();
+
+    if (subtitles.length === 0) {
+      this.subtitleTracksContainer.innerHTML =
+        '<div class="bilisub-empty">未找到可用字幕</div>';
+      this.subtitleTimelineContainer.innerHTML =
+        '<div class="bilisub-empty">无法展示字幕内容</div>';
+      return;
+    }
+
+    this.renderSubtitleTracks(subtitles);
+
+    const defaultSubtitle =
+      this.currentSubtitleItem ??
+      subtitles.find((s) => s.lan === "ai-zh") ??
+      subtitles[0];
+
+    await this.selectSubtitleTrack(defaultSubtitle);
+  }
+
+  private renderSubtitleTracks(subtitles: SubtitleItem[]) {
+    if (!this.subtitleTracksContainer) {
+      return;
+    }
+
+    this.subtitleTracksContainer.innerHTML = "";
+
+    subtitles.forEach((subtitle) => {
+      const button = document.createElement("button");
+      button.className = "bilisub-track-item";
+
+      const isAI = subtitle.lan === "ai-zh";
+      button.textContent = `${subtitle.lan_doc || subtitle.lan}${
+        isAI ? " · AI" : ""
+      }`;
+
+      if (this.currentSubtitleItem?.id === subtitle.id) {
+        button.classList.add("active");
+      }
+
+      button.addEventListener("click", () =>
+        this.selectSubtitleTrack(subtitle)
+      );
+      this.subtitleTracksContainer?.appendChild(button);
+    });
+  }
+
+  private async selectSubtitleTrack(subtitle: SubtitleItem) {
+    this.currentSubtitleItem = subtitle;
+
+    if (this.subtitleTracksContainer) {
+      this.subtitleTracksContainer
+        .querySelectorAll(".bilisub-track-item")
+        .forEach((el) => {
+          const button = el as HTMLButtonElement;
+          const isTarget =
+            button.textContent ===
+            `${subtitle.lan_doc || subtitle.lan}${
+              subtitle.lan === "ai-zh" ? " · AI" : ""
+            }`;
+          button.classList.toggle("active", isTarget);
+        });
+    }
+
+    if (this.subtitleTimelineContainer) {
+      this.subtitleTimelineContainer.innerHTML =
+        '<div class="bilisub-empty">加载字幕内容...</div>';
+    }
+
+    const cacheKey = subtitle.subtitle_url;
+    if (this.subtitleCache.has(cacheKey)) {
+      this.currentSubtitleData = this.subtitleCache.get(cacheKey)!;
+      this.renderSubtitleTimeline();
+      return;
+    }
+
     try {
-      if (!this.videoInfo) {
-        alert("获取视频信息失败");
+      const data = await BilibiliAPI.getSubtitle(subtitle.subtitle_url);
+      this.subtitleCache.set(cacheKey, data);
+      this.currentSubtitleData = data;
+      this.renderSubtitleTimeline();
+    } catch (error) {
+      console.error("加载字幕失败:", error);
+      if (this.subtitleTimelineContainer) {
+        this.subtitleTimelineContainer.innerHTML =
+          '<div class="bilisub-empty">加载失败，请重试</div>';
+      }
+    }
+  }
+
+  private renderSubtitleTimeline() {
+    if (!this.subtitleTimelineContainer) {
+      return;
+    }
+
+    if (!this.currentSubtitleData || !this.currentSubtitleData.body.length) {
+      this.subtitleTimelineContainer.innerHTML =
+        '<div class="bilisub-empty">暂无字幕内容</div>';
+      return;
+    }
+
+    this.subtitleTimelineContainer.innerHTML = "";
+    const fragment = document.createDocumentFragment();
+
+    this.currentSubtitleData.body.forEach((line) => {
+      const row = document.createElement("div");
+      row.className = "bilisub-line";
+
+      const time = document.createElement("div");
+      time.className = "bilisub-line-time";
+      time.textContent = `${this.formatTime(line.from)} → ${this.formatTime(
+        line.to
+      )}`;
+
+      const text = document.createElement("div");
+      text.className = "bilisub-line-text";
+      text.textContent = line.content.trim() || "（空）";
+
+      row.appendChild(time);
+      row.appendChild(text);
+      fragment.appendChild(row);
+    });
+
+    this.subtitleTimelineContainer.appendChild(fragment);
+  }
+
+  private formatTime(seconds: number): string {
+    const totalSeconds = Math.floor(seconds);
+    const mins = Math.floor(totalSeconds / 60)
+      .toString()
+      .padStart(2, "0");
+    const secs = Math.floor(totalSeconds % 60)
+      .toString()
+      .padStart(2, "0");
+    return `${mins}:${secs}`;
+  }
+
+  private async downloadCurrentSubtitle() {
+    if (!this.videoInfo) {
+      alert("获取视频信息失败");
+      return;
+    }
+
+    if (!this.currentSubtitleItem || !this.currentSubtitleData) {
+      this.showToast("请先选择一个字幕轨道");
+      return;
+    }
+
+    try {
+      const content = this.formatSubtitleContent(this.currentSubtitleData);
+      if (!content) {
+        alert("该字幕轨道暂无内容");
         return;
       }
 
-      const subtitles = await this.getSubtitleList();
-      if (!subtitles || subtitles.length === 0) {
-        alert("该视频没有字幕");
-        return;
-      }
-
-      this.showSubtitleSelection(subtitles, this.videoInfo);
+      const filename = `${sanitizeFilename(this.videoInfo.title)}_${
+        this.currentSubtitleItem.lan_doc || this.currentSubtitleItem.lan
+      }.txt`;
+      this.downloadFile(filename, content);
+      this.showToast("字幕下载完成");
     } catch (error) {
       console.error("下载字幕失败:", error);
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       alert("下载字幕失败: " + errorMessage);
     }
+  }
+
+  private showSummaryPlaceholder() {
+    this.showToast("AI 总结开发中，敬请期待");
   }
 
   private async getVideoInfo(): Promise<VideoInfo | null> {
@@ -695,185 +1063,16 @@ class BiliSub {
 
   private async getSubtitleList(): Promise<SubtitleItem[]> {
     try {
-      return await BilibiliAPI.getAvailableSubtitles(
+      const list = await BilibiliAPI.getAvailableSubtitles(
         this.cid,
         this.bvid,
         this.sessdata
       );
+      this.availableSubtitles = list;
+      return list;
     } catch (error) {
       console.error("获取字幕列表失败:", error);
       return [];
-    }
-  }
-
-  private showSubtitleSelection(
-    subtitles: SubtitleItem[],
-    videoInfo: VideoInfo
-  ) {
-    const overlay = document.createElement("div");
-    overlay.style.cssText = `
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(0, 0, 0, 0.5);
-      z-index: 10000;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-    `;
-
-    const modal = document.createElement("div");
-    modal.style.cssText = `
-      background: white;
-      padding: 20px;
-      border-radius: 10px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-      max-width: 500px;
-      max-height: 70vh;
-      overflow-y: auto;
-      animation: slideIn 0.3s ease;
-    `;
-
-    const style = document.createElement("style");
-    style.textContent = `
-      @keyframes slideIn {
-        from {
-          opacity: 0;
-          transform: translate(-50%, -50%) scale(0.9);
-        }
-        to {
-          opacity: 1;
-          transform: translate(-50%, -50%) scale(1);
-        }
-      }
-    `;
-    document.head.appendChild(style);
-
-    const title = document.createElement("h3");
-    title.textContent = "选择字幕";
-    title.style.cssText = `
-      margin: 0 0 15px 0;
-      color: #333;
-      font-size: 18px;
-      text-align: center;
-    `;
-
-    modal.appendChild(title);
-
-    const subtitleList = document.createElement("div");
-    subtitleList.style.cssText = `
-      max-height: 300px;
-      overflow-y: auto;
-    `;
-
-    subtitles.forEach((subtitle) => {
-      const btn = document.createElement("button");
-      const isAI = subtitle.lan === "ai-zh";
-      const aiLabel = isAI ? " 🤖 AI" : "";
-
-      btn.textContent = `${subtitle.lan_doc || subtitle.lan}${aiLabel}`;
-      btn.style.cssText = `
-        display: block;
-        width: 100%;
-        padding: 12px;
-        margin: 5px 0;
-        background: ${isAI ? "#e8f5e8" : "#f0f0f0"};
-        border: 1px solid ${isAI ? "#4caf50" : "#ddd"};
-        border-radius: 5px;
-        cursor: pointer;
-        text-align: left;
-        font-size: 14px;
-        transition: all 0.2s ease;
-      `;
-
-      btn.addEventListener("mouseenter", () => {
-        btn.style.background = isAI ? "#c8e6c9" : "#e0e0e0";
-        btn.style.transform = "translateX(2px)";
-      });
-
-      btn.addEventListener("mouseleave", () => {
-        btn.style.background = isAI ? "#e8f5e8" : "#f0f0f0";
-        btn.style.transform = "translateX(0)";
-      });
-
-      btn.addEventListener("click", () => {
-        this.downloadSubtitleFile(subtitle, videoInfo);
-        document.body.removeChild(overlay);
-      });
-
-      subtitleList.appendChild(btn);
-    });
-
-    modal.appendChild(subtitleList);
-
-    const closeBtn = document.createElement("button");
-    closeBtn.textContent = "关闭";
-    closeBtn.style.cssText = `
-      display: block;
-      width: 100%;
-      padding: 10px;
-      margin: 15px 0 0 0;
-      background: #ff4444;
-      color: white;
-      border: none;
-      border-radius: 5px;
-      cursor: pointer;
-      font-size: 14px;
-      transition: all 0.2s ease;
-    `;
-
-    closeBtn.addEventListener("mouseenter", () => {
-      closeBtn.style.background = "#cc0000";
-    });
-
-    closeBtn.addEventListener("mouseleave", () => {
-      closeBtn.style.background = "#ff4444";
-    });
-
-    closeBtn.addEventListener("click", () => {
-      document.body.removeChild(overlay);
-    });
-
-    modal.appendChild(closeBtn);
-
-    overlay.addEventListener("click", (e) => {
-      if (e.target === overlay) {
-        document.body.removeChild(overlay);
-      }
-    });
-
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
-  }
-
-  private async downloadSubtitleFile(
-    subtitle: SubtitleItem,
-    videoInfo: VideoInfo
-  ) {
-    try {
-      console.log(`正在下载字幕: ${subtitle.lan_doc} (${subtitle.lan})`);
-
-      const subtitleData = await BilibiliAPI.getSubtitle(subtitle.subtitle_url);
-      const content = this.formatSubtitleContent(subtitleData);
-
-      if (!content) {
-        alert("获取字幕内容失败");
-        return;
-      }
-
-      const filename = `${sanitizeFilename(videoInfo.title)}_${
-        subtitle.lan_doc || subtitle.lan
-      }.txt`;
-      this.downloadFile(filename, content);
-
-      console.log(`字幕下载完成: ${filename}`);
-    } catch (error) {
-      console.error("下载字幕文件失败:", error);
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      alert("下载字幕文件失败: " + errorMessage);
     }
   }
 
