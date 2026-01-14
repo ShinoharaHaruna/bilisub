@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BiliSub - 哔哩哔哩字幕下载工具
 // @namespace    https://github.com/ShinoharaHaruna/bilisub
-// @version      1.0.1
+// @version      1.1.0
 // @description  在哔哩哔哩页面直接下载字幕，支持AI字幕和普通字幕
 // @author       Shinohara Haruna
 // @match        *://*.bilibili.com/video/*
@@ -14,6 +14,7 @@
 // @connect      aisubtitle.hdslb.com
 // @connect      *.hdslb.com
 // @connect      *.bilivideo.com
+// @noframes
 // @license      MIT
 // ==/UserScript==
 
@@ -720,6 +721,7 @@ class BiliSub {
   private cid: number = 0;
   private sessdata: string | undefined;
   private downloadBtn: HTMLElement | null = null;
+  private readonly toolbarEntryId = "bilisub-toolbar-entry";
   private readonly sessdataStorageKey = "bilisub_sessdata";
   private readonly pageWindow: Window & typeof globalThis;
   private subtitlePanel: HTMLElement | null = null;
@@ -741,6 +743,11 @@ class BiliSub {
   private subtitleRetryAttempts = 0;
   private readonly maxSubtitleRetryAttempts = 3;
   private readonly subtitleRetryDelay = 1500;
+  private uiScheduleTimer: number | null = null;
+  private uiScheduled = false;
+  private entryAttachTimer: number | null = null;
+  private entryAttachAttempts = 0;
+  private readonly maxEntryAttachAttempts = 12;
 
   constructor() {
     this.pageWindow =
@@ -774,18 +781,40 @@ class BiliSub {
       return;
     }
 
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", () => this.setupUI());
-    } else {
-      this.setupUI();
-    }
-
-    // 每 2 秒检查一次按钮是否存在，如果不存在则重新添加
-    setInterval(() => {
-      this.setupUI();
-    }, 2000);
+    this.scheduleUI();
 
     this.startVideoChangeWatcher();
+  }
+
+  private scheduleUI() {
+    if (this.uiScheduled) {
+      return;
+    }
+    this.uiScheduled = true;
+
+    const run = () => {
+      if (this.uiScheduleTimer !== null) {
+        window.clearTimeout(this.uiScheduleTimer);
+        this.uiScheduleTimer = null;
+      }
+      // Delay a bit more to avoid interfering with Bilibili's Vue mount during page bootstrap.
+      this.uiScheduleTimer = window.setTimeout(() => {
+        this.setupUI();
+      }, 1200);
+    };
+
+    if (document.readyState === "complete") {
+      run();
+      return;
+    }
+
+    window.addEventListener(
+      "load",
+      () => {
+        run();
+      },
+      { once: true }
+    );
   }
 
   private getSessdata(): string | undefined {
@@ -1005,48 +1034,298 @@ class BiliSub {
   }
 
   private setupUI() {
-    // 检查按钮是否已存在
-    if (this.downloadBtn && document.contains(this.downloadBtn)) {
+    // Ensure we only ever have one toolbar entry in DOM.
+    const existing = document.getElementById(this.toolbarEntryId);
+    if (existing) {
+      this.downloadBtn = existing;
+    } else {
+      this.downloadBtn = this.createDownloadButtonWrap();
+    }
+
+    // Clean up any unexpected duplicates (e.g. DOM cloned by SPA/player reload).
+    const duplicates = Array.from(
+      document.querySelectorAll(`#${this.toolbarEntryId}`)
+    );
+    if (duplicates.length > 1) {
+      duplicates.slice(1).forEach((el) => el.remove());
+    }
+
+    if (this.tryAttachEntryToPlayer()) {
+      this.stopEntryAttachTimer();
       return;
     }
 
-    this.downloadBtn = this.createDownloadButtonWrap();
-
-    // 插入到工具栏左侧主区域
-    const targetElement = document.querySelector(".video-toolbar-left-main");
-    if (targetElement) {
-      targetElement.appendChild(this.downloadBtn);
-    } else {
-      // 备用：固定定位到右上角
+    // Fallback: keep a floating entry available.
+    this.applyEntryMode("floating");
+    if (this.downloadBtn.parentElement !== document.body) {
       document.body.appendChild(this.downloadBtn);
+    }
+
+    this.startEntryAttachTimer();
+  }
+
+  private startEntryAttachTimer() {
+    if (this.entryAttachTimer !== null) {
+      return;
+    }
+    this.entryAttachAttempts = 0;
+
+    this.entryAttachTimer = window.setInterval(() => {
+      this.entryAttachAttempts += 1;
+      if (this.tryAttachEntryToPlayer()) {
+        this.stopEntryAttachTimer();
+        return;
+      }
+
+      if (this.entryAttachAttempts >= this.maxEntryAttachAttempts) {
+        this.stopEntryAttachTimer();
+      }
+    }, 800);
+  }
+
+  private stopEntryAttachTimer() {
+    if (this.entryAttachTimer === null) {
+      return;
+    }
+    window.clearInterval(this.entryAttachTimer);
+    this.entryAttachTimer = null;
+  }
+
+  private tryAttachEntryToPlayer(): boolean {
+    if (!this.downloadBtn) {
+      return false;
+    }
+
+    if (this.tryAttachEntryToSubtitleMenu()) {
+      return true;
+    }
+
+    // Fallback: attach next to the native subtitle control in bpx player.
+    const subtitleBtn = document.querySelector(
+      ".bpx-player-ctrl-btn.bpx-player-ctrl-subtitle"
+    );
+    if (!subtitleBtn) {
+      return false;
+    }
+
+    const container = subtitleBtn.parentElement;
+    if (!container) {
+      return false;
+    }
+
+    this.applyEntryMode("player");
+
+    if (this.downloadBtn.parentElement !== container) {
+      container.insertBefore(this.downloadBtn, subtitleBtn.nextSibling);
+    }
+
+    return true;
+  }
+
+  private tryAttachEntryToSubtitleMenu(): boolean {
+    if (!this.downloadBtn) {
+      return false;
+    }
+
+    const menuOrigin = document.querySelector(
+      ".bpx-player-ctrl-subtitle-menu-origin"
+    );
+    if (!menuOrigin) {
+      return false;
+    }
+
+    const anchor = menuOrigin.querySelector(
+      ".bpx-player-ctrl-subtitle-setting"
+    );
+    if (!anchor || !anchor.parentElement) {
+      return false;
+    }
+
+    const menuItem = (anchor.cloneNode(true) as HTMLElement) || null;
+    if (!menuItem) {
+      return false;
+    }
+    menuItem.id = this.toolbarEntryId;
+    menuItem.classList.add("bilisub-menu-entry");
+    menuItem.setAttribute("aria-label", "BiliSub 字幕下载");
+    menuItem.tabIndex = 0;
+
+    const text = menuItem.querySelector(
+      ".bpx-player-ctrl-subtitle-setting-text"
+    ) as HTMLElement | null;
+    if (text) {
+      text.textContent = "字幕下载";
+    } else {
+      menuItem.textContent = "字幕下载";
+    }
+
+    menuItem.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.toggleSubtitlePanel();
+    });
+
+    if (this.downloadBtn !== menuItem) {
+      this.downloadBtn.replaceWith(menuItem);
+      this.downloadBtn = menuItem;
+    }
+
+    if (this.downloadBtn.parentElement !== anchor.parentElement) {
+      anchor.parentElement.insertBefore(this.downloadBtn, anchor);
+    }
+
+    const panelWrap = menuOrigin.closest(
+      ".bui-panel-wrap"
+    ) as HTMLElement | null;
+    if (panelWrap && panelWrap.dataset.bilisubExpanded !== "1") {
+      panelWrap.dataset.bilisubExpanded = "1";
+      const currentHeight = panelWrap.style.height;
+      const match = currentHeight.match(/^(\d+(?:\.\d+)?)px$/);
+      if (match) {
+        const next = Math.round(Number(match[1]) + 40);
+        panelWrap.style.height = `${next}px`;
+
+        const panelItem = panelWrap.querySelector(
+          ".bui-panel-item.bui-panel-item-active"
+        ) as HTMLElement | null;
+        if (panelItem) {
+          panelItem.style.height = `${next}px`;
+        }
+      }
+    }
+
+    return true;
+  }
+
+  private applyEntryMode(mode: "menu" | "player" | "floating") {
+    if (!this.downloadBtn) {
+      return;
+    }
+
+    const button = this.downloadBtn.querySelector(
+      ".bilisub-entry"
+    ) as HTMLElement | null;
+
+    const icon = this.downloadBtn.querySelector(
+      ".bilisub-entry-icon"
+    ) as HTMLElement | null;
+    const text = this.downloadBtn.querySelector(
+      ".bilisub-entry-text"
+    ) as HTMLElement | null;
+
+    if (mode === "menu") {
+      this.downloadBtn.className =
+        "bpx-player-ctrl-subtitle-setting bilisub-menu-entry";
+      this.downloadBtn.removeAttribute("style");
+      this.downloadBtn.setAttribute("aria-label", "BiliSub 字幕下载");
+      this.downloadBtn.tabIndex = 0;
+
+      if (button) {
+        button.style.cssText = "display:flex;align-items:center;width:100%;";
+      }
+
+      if (icon) {
+        icon.style.display = "none";
+      }
+
+      if (text) {
+        text.textContent = "字幕下载";
+        text.style.cssText = "color:#fff;";
+      }
+
+      return;
+    }
+
+    if (mode === "player") {
+      this.downloadBtn.className = "bpx-player-ctrl-btn bilisub-player-entry";
+      this.downloadBtn.removeAttribute("style");
+      this.downloadBtn.setAttribute("aria-label", "BiliSub 字幕下载");
+      this.downloadBtn.tabIndex = 0;
+
+      if (button) {
+        button.removeAttribute("style");
+      }
+
+      if (icon) {
+        icon.style.removeProperty("display");
+      }
+
+      if (text) {
+        text.textContent = "字幕";
+        text.removeAttribute("style");
+      }
+      return;
+    }
+
+    this.downloadBtn.className = "bilisub-floating-entry";
+    this.downloadBtn.style.cssText = `
+      position: fixed;
+      right: 24px;
+      bottom: 120px;
+      z-index: 1000000;
+    `;
+    this.downloadBtn.removeAttribute("aria-label");
+    this.downloadBtn.tabIndex = -1;
+
+    if (button) {
+      button.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: rgba(19, 21, 25, 0.92);
+        color: #fff;
+        cursor: pointer;
+        user-select: none;
+        box-shadow: 0 10px 24px rgba(0,0,0,0.28);
+        font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+        font-size: 13px;
+      `;
+    }
+
+    if (icon) {
+      icon.style.removeProperty("display");
+    }
+
+    if (text) {
+      text.textContent = "字幕";
+      text.removeAttribute("style");
     }
   }
 
   private createDownloadButtonWrap(): HTMLElement {
     const wrap = document.createElement("div");
-    wrap.className = "toolbar-left-item-wrap";
+    wrap.id = this.toolbarEntryId;
+    wrap.className = "bilisub-floating-entry";
 
     const button = document.createElement("div");
     button.title = "字幕面板";
-    button.className = "video-download video-toolbar-left-item";
-    button.addEventListener("click", () => this.toggleSubtitlePanel());
+    // Avoid Bilibili native classes (e.g. video-download) to prevent shortcut/event collisions.
+    button.className = "bilisub-entry";
+    button.addEventListener("click", (event) => {
+      // Keep subtitle menu stable; only handle our action.
+      event.stopPropagation();
+      this.toggleSubtitlePanel();
+    });
 
     const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     icon.setAttribute("width", "28");
     icon.setAttribute("height", "28");
     icon.setAttribute("viewBox", "0 0 28 28");
-    icon.setAttribute("class", "video-download-icon video-toolbar-item-icon");
+    icon.setAttribute("class", "bilisub-entry-icon");
     icon.innerHTML =
       '<path d="M14 2C7.37 2 2 7.37 2 14s5.37 12 12 12 12-5.37 12-12S20.63 2 14 2zm-1 16l-4-4h3V9h2v5h3l-4 4z" fill="currentColor"/>';
 
     const text = document.createElement("span");
-    text.className = "video-download-info video-toolbar-item-text";
+    text.className = "bilisub-entry-text";
     text.textContent = "字幕";
 
     button.appendChild(icon);
     button.appendChild(text);
     wrap.appendChild(button);
 
+    this.downloadBtn = wrap;
+    this.applyEntryMode("floating");
     return wrap;
   }
 
@@ -1158,120 +1437,6 @@ class BiliSub {
 
     this.subtitlePanel.classList.add("bilisub-panel-visible");
     await this.refreshSubtitles(false);
-  }
-
-  private createSubtitlePanel() {
-    this.ensurePanelStyles();
-
-    const panel = document.createElement("div");
-    panel.id = "bilisub-panel";
-    panel.className = "bilisub-panel";
-
-    const header = document.createElement("div");
-    header.className = "bilisub-panel-header";
-
-    const title = document.createElement("span");
-    title.textContent = "字幕";
-
-    const actions = document.createElement("div");
-    actions.className = "bilisub-panel-actions";
-
-    this.actionRefreshBtn = document.createElement("button");
-    this.actionRefreshBtn.textContent = "刷新";
-    this.actionRefreshBtn.addEventListener("click", () =>
-      this.refreshSubtitles(true)
-    );
-
-    this.actionSummaryBtn = document.createElement("button");
-    this.actionSummaryBtn.textContent = "AI 总结";
-    this.actionSummaryBtn.addEventListener("click", () =>
-      this.showSummaryPlaceholder()
-    );
-
-    this.actionDownloadBtn = document.createElement("button");
-    this.actionDownloadBtn.textContent = "下载";
-    this.actionDownloadBtn.addEventListener("click", () =>
-      this.downloadCurrentSubtitle()
-    );
-
-    const closeBtn = document.createElement("button");
-    closeBtn.textContent = "×";
-    closeBtn.className = "bilisub-close-btn";
-    closeBtn.addEventListener("click", () => {
-      panel.classList.remove("bilisub-panel-visible");
-    });
-
-    actions.appendChild(this.actionRefreshBtn);
-    actions.appendChild(this.actionSummaryBtn);
-    actions.appendChild(this.actionDownloadBtn);
-    actions.appendChild(closeBtn);
-
-    header.appendChild(title);
-    header.appendChild(actions);
-
-    const content = document.createElement("div");
-    content.className = "bilisub-panel-content";
-
-    this.subtitleTracksContainer = document.createElement("div");
-    this.subtitleTracksContainer.className = "bilisub-tracks";
-
-    this.subtitleTimelineContainer = document.createElement("div");
-    this.subtitleTimelineContainer.className = "bilisub-timeline";
-
-    content.appendChild(this.subtitleTracksContainer);
-    content.appendChild(this.subtitleTimelineContainer);
-
-    panel.appendChild(header);
-    panel.appendChild(content);
-
-    document.body.appendChild(panel);
-    this.subtitlePanel = panel;
-  }
-
-  private async refreshSubtitles(showToastOnSuccess: boolean) {
-    if (!this.subtitlePanel || this.isRefreshingSubtitles) {
-      if (this.isRefreshingSubtitles && showToastOnSuccess) {
-        this.showToast("字幕刷新中，请稍候...");
-      }
-      return;
-    }
-
-    this.isRefreshingSubtitles = true;
-    if (this.actionRefreshBtn) {
-      this.actionRefreshBtn.disabled = true;
-      this.actionRefreshBtn.textContent = "刷新中...";
-    }
-
-    try {
-      if (!this.videoInfo || this.videoInfo.bvid !== this.bvid) {
-        this.videoInfo = await this.getVideoInfo();
-      }
-
-      if (!this.videoInfo) {
-        throw new Error("无法获取视频信息");
-      }
-
-      const partIndex = this.getCurrentP();
-      this.cid = partIndex
-        ? this.videoInfo.pages[partIndex - 1]?.cid || this.videoInfo.cid
-        : this.videoInfo.cid;
-
-      this.subtitleCache.clear();
-      await this.loadSubtitlePanelData();
-
-      if (showToastOnSuccess) {
-        this.showToast("字幕已刷新");
-      }
-    } catch (error) {
-      console.error("刷新字幕失败:", error);
-      this.showToast("刷新字幕失败，请稍后重试");
-    } finally {
-      this.isRefreshingSubtitles = false;
-      if (this.actionRefreshBtn) {
-        this.actionRefreshBtn.disabled = false;
-        this.actionRefreshBtn.textContent = "刷新";
-      }
-    }
   }
 
   private ensurePanelStyles() {
@@ -1392,6 +1557,120 @@ class BiliSub {
     `;
 
     document.head.appendChild(style);
+  }
+
+  private createSubtitlePanel() {
+    this.ensurePanelStyles();
+
+    const panel = document.createElement("div");
+    panel.id = "bilisub-panel";
+    panel.className = "bilisub-panel";
+
+    const header = document.createElement("div");
+    header.className = "bilisub-panel-header";
+
+    const title = document.createElement("span");
+    title.textContent = "字幕";
+
+    const actions = document.createElement("div");
+    actions.className = "bilisub-panel-actions";
+
+    this.actionRefreshBtn = document.createElement("button");
+    this.actionRefreshBtn.textContent = "刷新";
+    this.actionRefreshBtn.addEventListener("click", () =>
+      this.refreshSubtitles(true)
+    );
+
+    this.actionSummaryBtn = document.createElement("button");
+    this.actionSummaryBtn.textContent = "AI 总结";
+    this.actionSummaryBtn.addEventListener("click", () =>
+      this.showSummaryPlaceholder()
+    );
+
+    this.actionDownloadBtn = document.createElement("button");
+    this.actionDownloadBtn.textContent = "下载";
+    this.actionDownloadBtn.addEventListener("click", () =>
+      this.downloadCurrentSubtitle()
+    );
+
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "×";
+    closeBtn.className = "bilisub-close-btn";
+    closeBtn.addEventListener("click", () => {
+      panel.classList.remove("bilisub-panel-visible");
+    });
+
+    actions.appendChild(this.actionRefreshBtn);
+    actions.appendChild(this.actionSummaryBtn);
+    actions.appendChild(this.actionDownloadBtn);
+    actions.appendChild(closeBtn);
+
+    header.appendChild(title);
+    header.appendChild(actions);
+
+    const content = document.createElement("div");
+    content.className = "bilisub-panel-content";
+
+    this.subtitleTracksContainer = document.createElement("div");
+    this.subtitleTracksContainer.className = "bilisub-tracks";
+
+    this.subtitleTimelineContainer = document.createElement("div");
+    this.subtitleTimelineContainer.className = "bilisub-timeline";
+
+    content.appendChild(this.subtitleTracksContainer);
+    content.appendChild(this.subtitleTimelineContainer);
+
+    panel.appendChild(header);
+    panel.appendChild(content);
+
+    document.body.appendChild(panel);
+    this.subtitlePanel = panel;
+  }
+
+  private async refreshSubtitles(showToastOnSuccess: boolean) {
+    if (!this.subtitlePanel || this.isRefreshingSubtitles) {
+      if (this.isRefreshingSubtitles && showToastOnSuccess) {
+        this.showToast("字幕刷新中，请稍候...");
+      }
+      return;
+    }
+
+    this.isRefreshingSubtitles = true;
+    if (this.actionRefreshBtn) {
+      this.actionRefreshBtn.disabled = true;
+      this.actionRefreshBtn.textContent = "刷新中...";
+    }
+
+    try {
+      if (!this.videoInfo || this.videoInfo.bvid !== this.bvid) {
+        this.videoInfo = await this.getVideoInfo();
+      }
+
+      if (!this.videoInfo) {
+        throw new Error("无法获取视频信息");
+      }
+
+      const partIndex = this.getCurrentP();
+      this.cid = partIndex
+        ? this.videoInfo.pages[partIndex - 1]?.cid || this.videoInfo.cid
+        : this.videoInfo.cid;
+
+      this.subtitleCache.clear();
+      await this.loadSubtitlePanelData();
+
+      if (showToastOnSuccess) {
+        this.showToast("字幕已刷新");
+      }
+    } catch (error) {
+      console.error("刷新字幕失败:", error);
+      this.showToast("刷新字幕失败，请稍后重试");
+    } finally {
+      this.isRefreshingSubtitles = false;
+      if (this.actionRefreshBtn) {
+        this.actionRefreshBtn.disabled = false;
+        this.actionRefreshBtn.textContent = "刷新";
+      }
+    }
   }
 
   private async loadSubtitlePanelData() {
@@ -1649,4 +1928,20 @@ class BiliSub {
   }
 }
 
-new BiliSub();
+(() => {
+  if (window.top !== window.self) {
+    return;
+  }
+
+  const globalObj =
+    typeof unsafeWindow !== "undefined"
+      ? (unsafeWindow as any)
+      : (window as any);
+
+  if (globalObj.__BILISUB_INITIALIZED__) {
+    return;
+  }
+  globalObj.__BILISUB_INITIALIZED__ = true;
+
+  new BiliSub();
+})();
