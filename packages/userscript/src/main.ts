@@ -1,12 +1,11 @@
 // ==UserScript==
 // @name         BiliSub - 哔哩哔哩字幕下载工具
 // @namespace    https://github.com/ShinoharaHaruna/bilisub
-// @version      1.1.0
+// @version      1.1.1
 // @description  在哔哩哔哩页面直接下载字幕，支持AI字幕和普通字幕
 // @author       Shinohara Haruna
 // @match        *://*.bilibili.com/video/*
 // @grant        GM_xmlhttpRequest
-// @grant        GM_download
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        unsafeWindow
@@ -384,44 +383,6 @@ class BilibiliAPI {
     };
   }
 
-  static async getSubtitleURL(
-    cid: number,
-    bvid: string,
-    sessdata?: string
-  ): Promise<SubtitleItem> {
-    const url = await this.buildWbiUrl(
-      "/x/player/wbi/v2",
-      { cid, bvid },
-      sessdata
-    );
-
-    const data = await this.requestJson<PlayerConfigResp>(url, sessdata);
-
-    if (data.code !== 0) {
-      throw new Error(`API错误: ${data.message}`);
-    }
-
-    let selectedSub: SubtitleItem | undefined;
-
-    for (const sub of data.data.subtitle.subtitles) {
-      if (sub.lan === "ai-zh" && !selectedSub) {
-        selectedSub = sub;
-        break;
-      } else if (sub.lan_doc.includes("中文") && !selectedSub) {
-        selectedSub = sub;
-      }
-    }
-
-    if (!selectedSub) {
-      throw new Error("未找到中文字幕");
-    }
-
-    console.log(
-      `选择字幕: lan=${selectedSub.lan}, lan_doc=${selectedSub.lan_doc}`
-    );
-    return selectedSub;
-  }
-
   static async getSubtitle(
     subtitleURL: string,
     sessdata?: string
@@ -534,24 +495,12 @@ class BilibiliAPI {
       sessdata
     );
 
-    console.log(
-      "Fetching subtitles for cid:",
-      cid,
-      "bvid:",
-      bvid,
-      "sessdata present:",
-      !!sessdata
-    );
-
     const data = await this.requestJson<PlayerConfigResp>(url, sessdata);
-    console.log("API response:", data);
 
     if (data.code !== 0) {
-      console.log("API error, code:", data.code, "message:", data.message);
       throw new Error(`API错误: ${data.message}`);
     }
 
-    console.log("Subtitles:", data.data.subtitle.subtitles);
     return data.data.subtitle.subtitles;
   }
 
@@ -738,11 +687,6 @@ class BiliSub {
   private videoChangeWatcher: number | null = null;
   private isHandlingVideoChange = false;
   private isRefreshingSubtitles = false;
-  private subtitleRetryTimer: number | null = null;
-  private readonly subtitleRefreshDelay = 1200;
-  private subtitleRetryAttempts = 0;
-  private readonly maxSubtitleRetryAttempts = 3;
-  private readonly subtitleRetryDelay = 1500;
   private uiScheduleTimer: number | null = null;
   private uiScheduled = false;
   private entryAttachTimer: number | null = null;
@@ -758,8 +702,6 @@ class BiliSub {
   }
 
   private async init() {
-    console.log("BiliSub 初始化中...");
-
     this.bvid = extractBVID(window.location.href);
     if (!this.bvid) {
       console.error("无法获取BV号");
@@ -767,7 +709,6 @@ class BiliSub {
     }
 
     this.sessdata = this.getSessdata();
-    console.log("Sessdata found:", !!this.sessdata);
 
     const p = this.getCurrentP();
     try {
@@ -775,7 +716,6 @@ class BiliSub {
       this.cid = p
         ? this.videoInfo.pages[p - 1]?.cid || this.videoInfo.cid
         : this.videoInfo.cid;
-      console.log("Current p:", p, "cid set to:", this.cid);
     } catch (error) {
       console.error("获取视频信息失败:", error);
       return;
@@ -820,14 +760,10 @@ class BiliSub {
   private getSessdata(): string | undefined {
     const stored = this.getStoredSessdata();
     if (stored) {
-      console.log("Using stored SESSDATA");
       return stored;
     }
-
-    console.log("All cookies:", document.cookie);
     const cookies = document.cookie.split(";").map((c) => c.trim().split("="));
     const sessdata = cookies.find(([name]) => name === "SESSDATA")?.[1];
-    console.log("SESSDATA:", sessdata);
     return sessdata;
   }
 
@@ -982,10 +918,6 @@ class BiliSub {
     panel.appendChild(btnRow);
     overlay.appendChild(panel);
     document.body.appendChild(overlay);
-
-    console.log(
-      "[BiliSub] 控制台命令：window.__BILISUB_SET_SESSDATA('在此粘贴 SESSDATA');"
-    );
   }
 
   private ensureSessdataAvailable(): boolean {
@@ -1335,10 +1267,6 @@ class BiliSub {
     });
   }
 
-  private async waitForSubtitlePreparation() {
-    await this.delay(this.subtitleRefreshDelay);
-  }
-
   private startVideoChangeWatcher() {
     if (this.videoChangeWatcher !== null) {
       return;
@@ -1347,12 +1275,6 @@ class BiliSub {
     this.videoChangeWatcher = window.setInterval(() => {
       const currentSignature = this.buildVideoSignature();
       if (currentSignature !== this.locationSignature) {
-        console.log(
-          "[BiliSub] 检测到视频 URL 变化:",
-          this.locationSignature,
-          "→",
-          currentSignature
-        );
         this.locationSignature = currentSignature;
         this.handleVideoChange();
       }
@@ -1765,12 +1687,6 @@ class BiliSub {
     }
 
     try {
-      console.log(
-        "[BiliSub] 准备拉取字幕文件:",
-        subtitle.subtitle_url,
-        "lan:",
-        subtitle.lan
-      );
       const data = await BilibiliAPI.getSubtitle(
         subtitle.subtitle_url,
         this.sessdata
