@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BiliSub - 哔哩哔哩字幕下载工具
 // @namespace    https://github.com/ShinoharaHaruna/bilisub
-// @version      1.1.1
+// @version      1.2.0
 // @description  在哔哩哔哩页面直接下载字幕，支持AI字幕和普通字幕
 // @author       Shinohara Haruna
 // @match        *://*.bilibili.com/video/*
@@ -20,7 +20,7 @@
 declare function GM_setValue(key: string, value: string): void;
 declare function GM_getValue<T = unknown>(
   key: string,
-  defaultValue?: T
+  defaultValue?: T,
 ): T | undefined;
 declare const unsafeWindow: Window & typeof globalThis;
 declare function GM_xmlhttpRequest(details: {
@@ -128,6 +128,13 @@ interface NavResp {
   };
 }
 
+class BiliSubAuthError extends Error {
+  constructor(message?: string) {
+    super(message || "账号未登录或 SESSDATA 已失效");
+    this.name = "BiliSubAuthError";
+  }
+}
+
 // 工具函数
 function sanitizeFilename(filename: string): string {
   return filename.replace(/[<>:"/\\|?*]/g, "_").trim();
@@ -181,7 +188,7 @@ function md5(input: string): string {
     d: number,
     x: number,
     s: number,
-    ac: number
+    ac: number,
   ) {
     a = addUnsigned(a, addUnsigned(addUnsigned(F(b, c, d), x), ac));
     return addUnsigned(rotateLeft(a, s), b);
@@ -194,7 +201,7 @@ function md5(input: string): string {
     d: number,
     x: number,
     s: number,
-    ac: number
+    ac: number,
   ) {
     a = addUnsigned(a, addUnsigned(addUnsigned(G(b, c, d), x), ac));
     return addUnsigned(rotateLeft(a, s), b);
@@ -207,7 +214,7 @@ function md5(input: string): string {
     d: number,
     x: number,
     s: number,
-    ac: number
+    ac: number,
   ) {
     a = addUnsigned(a, addUnsigned(addUnsigned(H(b, c, d), x), ac));
     return addUnsigned(rotateLeft(a, s), b);
@@ -220,7 +227,7 @@ function md5(input: string): string {
     d: number,
     x: number,
     s: number,
-    ac: number
+    ac: number,
   ) {
     a = addUnsigned(a, addUnsigned(addUnsigned(I(b, c, d), x), ac));
     return addUnsigned(rotateLeft(a, s), b);
@@ -385,7 +392,7 @@ class BilibiliAPI {
 
   static async getSubtitle(
     subtitleURL: string,
-    sessdata?: string
+    sessdata?: string,
   ): Promise<BilibiliSubtitle> {
     const url = subtitleURL.startsWith("//")
       ? `https:${subtitleURL}`
@@ -414,9 +421,9 @@ class BilibiliAPI {
           finish(() =>
             reject(
               new Error(
-                `请求 ${host} 超时或被拦截，请确认脚本已允许访问该域名（@connect）。`
-              )
-            )
+                `请求 ${host} 超时或被拦截，请确认脚本已允许访问该域名（@connect）。`,
+              ),
+            ),
           );
         }, 10000);
 
@@ -443,8 +450,8 @@ class BilibiliAPI {
                 } else {
                   reject(
                     new Error(
-                      `请求失败，状态码：${response.status} ${response.statusText}`
-                    )
+                      `请求失败，状态码：${response.status} ${response.statusText}`,
+                    ),
                   );
                 }
               });
@@ -455,9 +462,9 @@ class BilibiliAPI {
                   new Error(
                     `请求失败，状态码：${response.status} ${
                       response.statusText || ""
-                    }`.trim()
-                  )
-                )
+                    }`.trim(),
+                  ),
+                ),
               );
             },
             ontimeout: () => {
@@ -470,9 +477,9 @@ class BilibiliAPI {
               new Error(
                 `Tampermonkey 拒绝访问 ${host}，请在脚本头部添加对应 @connect 并重新安装。原始错误: ${
                   error instanceof Error ? error.message : String(error)
-                }`
-              )
-            )
+                }`,
+              ),
+            ),
           );
         }
       });
@@ -487,12 +494,12 @@ class BilibiliAPI {
   static async getAvailableSubtitles(
     cid: number,
     bvid: string,
-    sessdata?: string
+    sessdata?: string,
   ): Promise<SubtitleItem[]> {
     const url = await this.buildWbiUrl(
       "/x/player/wbi/v2",
       { cid, bvid },
-      sessdata
+      sessdata,
     );
 
     const data = await this.requestJson<PlayerConfigResp>(url, sessdata);
@@ -507,7 +514,7 @@ class BilibiliAPI {
   private static async buildWbiUrl(
     path: string,
     params: Record<string, string | number>,
-    sessdata?: string
+    sessdata?: string,
   ): Promise<string> {
     const query = await this.getSignedQuery(params, sessdata);
     return `${this.BASE_URL}${path}?${query}`;
@@ -515,7 +522,7 @@ class BilibiliAPI {
 
   private static async fetchWithHeaders(
     url: string,
-    sessdata?: string
+    sessdata?: string,
   ): Promise<Response> {
     const headers: Record<string, string> = {
       "User-Agent": this.USER_AGENT,
@@ -534,7 +541,7 @@ class BilibiliAPI {
 
   private static async requestJson<T>(
     url: string,
-    sessdata?: string
+    sessdata?: string,
   ): Promise<T> {
     const headers: Record<string, string> = {
       "User-Agent": this.USER_AGENT,
@@ -558,6 +565,11 @@ class BilibiliAPI {
             if (response.status >= 200 && response.status < 300) {
               try {
                 const parsed = JSON.parse(response.responseText) as T;
+                const code = (parsed as any)?.code;
+                if (code === -101) {
+                  reject(new BiliSubAuthError((parsed as any)?.message));
+                  return;
+                }
                 resolve(parsed);
               } catch (error) {
                 reject(error);
@@ -565,8 +577,8 @@ class BilibiliAPI {
             } else {
               reject(
                 new Error(
-                  `请求失败，状态码：${response.status} ${response.statusText}`
-                )
+                  `请求失败，状态码：${response.status} ${response.statusText}`,
+                ),
               );
             }
           },
@@ -575,8 +587,8 @@ class BilibiliAPI {
               new Error(
                 `请求失败，状态码：${response.status} ${
                   response.statusText || ""
-                }`.trim()
-              )
+                }`.trim(),
+              ),
             );
           },
           ontimeout: () => {
@@ -595,7 +607,12 @@ class BilibiliAPI {
       throw new Error(`请求失败，状态码：${response.status}`);
     }
 
-    return (await response.json()) as T;
+    const parsed = (await response.json()) as T;
+    const code = (parsed as any)?.code;
+    if (code === -101) {
+      throw new BiliSubAuthError((parsed as any)?.message);
+    }
+    return parsed;
   }
 
   private static sanitizeParamValue(value: string | number): string {
@@ -604,18 +621,18 @@ class BilibiliAPI {
 
   private static async getSignedQuery(
     params: Record<string, string | number>,
-    sessdata?: string
+    sessdata?: string,
   ): Promise<string> {
     const mixinKey = await this.ensureWbiMixinKey(sessdata);
     const entries: [string, string][] = Object.entries(params).map(
-      ([key, value]) => [key, this.sanitizeParamValue(value)]
+      ([key, value]) => [key, this.sanitizeParamValue(value)],
     );
     entries.push(["wts", String(Math.floor(Date.now() / 1000))]);
     entries.sort((a, b) => a[0].localeCompare(b[0]));
     const query = entries
       .map(
         ([key, value]) =>
-          `${encodeURIComponent(key)}=${encodeURIComponent(value)}`
+          `${encodeURIComponent(key)}=${encodeURIComponent(value)}`,
       )
       .join("&");
     const wRid = md5(query + mixinKey);
@@ -633,7 +650,7 @@ class BilibiliAPI {
 
     const navResp = await this.requestJson<NavResp>(
       `${this.BASE_URL}/x/web-interface/nav`,
-      sessdata
+      sessdata,
     );
     const imgKey = this.extractKeyFromUrl(navResp.data.wbi_img?.img_url);
     const subKey = this.extractKeyFromUrl(navResp.data.wbi_img?.sub_url);
@@ -650,7 +667,7 @@ class BilibiliAPI {
 
   private static deriveMixinKey(rawKey: string): string {
     const chars = this.MIXIN_KEY_ENC_TAB.map((idx) => rawKey[idx] || "").join(
-      ""
+      "",
     );
     return chars.slice(0, 32);
   }
@@ -753,7 +770,7 @@ class BiliSub {
       () => {
         run();
       },
-      { once: true }
+      { once: true },
     );
   }
 
@@ -772,7 +789,7 @@ class BiliSub {
       if (typeof GM_getValue === "function") {
         const value = GM_getValue<string | undefined>(
           this.sessdataStorageKey,
-          undefined
+          undefined,
         );
         if (value) {
           return value;
@@ -784,6 +801,39 @@ class BiliSub {
 
     const fallback = localStorage.getItem(this.sessdataStorageKey);
     return fallback ?? undefined;
+  }
+
+  private clearStoredSessdata() {
+    try {
+      if (typeof GM_setValue === "function") {
+        GM_setValue(this.sessdataStorageKey, "");
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      localStorage.removeItem(this.sessdataStorageKey);
+    } catch {
+      // ignore
+    }
+  }
+
+  private handleSessdataInvalid(error: unknown): boolean {
+    if (!(error instanceof BiliSubAuthError)) {
+      return false;
+    }
+
+    this.sessdata = undefined;
+    this.clearStoredSessdata();
+    this.availableSubtitles = [];
+    this.subtitleCache.clear();
+    this.currentSubtitleItem = null;
+    this.currentSubtitleData = null;
+
+    this.showToast("SESSDATA 已失效，请重新设置");
+    this.promptSessdataGuide();
+    return true;
   }
 
   private saveSessdata(value: string) {
@@ -976,7 +1026,7 @@ class BiliSub {
 
     // Clean up any unexpected duplicates (e.g. DOM cloned by SPA/player reload).
     const duplicates = Array.from(
-      document.querySelectorAll(`#${this.toolbarEntryId}`)
+      document.querySelectorAll(`#${this.toolbarEntryId}`),
     );
     if (duplicates.length > 1) {
       duplicates.slice(1).forEach((el) => el.remove());
@@ -1034,7 +1084,7 @@ class BiliSub {
 
     // Fallback: attach next to the native subtitle control in bpx player.
     const subtitleBtn = document.querySelector(
-      ".bpx-player-ctrl-btn.bpx-player-ctrl-subtitle"
+      ".bpx-player-ctrl-btn.bpx-player-ctrl-subtitle",
     );
     if (!subtitleBtn) {
       return false;
@@ -1060,14 +1110,14 @@ class BiliSub {
     }
 
     const menuOrigin = document.querySelector(
-      ".bpx-player-ctrl-subtitle-menu-origin"
+      ".bpx-player-ctrl-subtitle-menu-origin",
     );
     if (!menuOrigin) {
       return false;
     }
 
     const anchor = menuOrigin.querySelector(
-      ".bpx-player-ctrl-subtitle-setting"
+      ".bpx-player-ctrl-subtitle-setting",
     );
     if (!anchor || !anchor.parentElement) {
       return false;
@@ -1083,7 +1133,7 @@ class BiliSub {
     menuItem.tabIndex = 0;
 
     const text = menuItem.querySelector(
-      ".bpx-player-ctrl-subtitle-setting-text"
+      ".bpx-player-ctrl-subtitle-setting-text",
     ) as HTMLElement | null;
     if (text) {
       text.textContent = "字幕下载";
@@ -1106,7 +1156,7 @@ class BiliSub {
     }
 
     const panelWrap = menuOrigin.closest(
-      ".bui-panel-wrap"
+      ".bui-panel-wrap",
     ) as HTMLElement | null;
     if (panelWrap && panelWrap.dataset.bilisubExpanded !== "1") {
       panelWrap.dataset.bilisubExpanded = "1";
@@ -1117,7 +1167,7 @@ class BiliSub {
         panelWrap.style.height = `${next}px`;
 
         const panelItem = panelWrap.querySelector(
-          ".bui-panel-item.bui-panel-item-active"
+          ".bui-panel-item.bui-panel-item-active",
         ) as HTMLElement | null;
         if (panelItem) {
           panelItem.style.height = `${next}px`;
@@ -1134,14 +1184,14 @@ class BiliSub {
     }
 
     const button = this.downloadBtn.querySelector(
-      ".bilisub-entry"
+      ".bilisub-entry",
     ) as HTMLElement | null;
 
     const icon = this.downloadBtn.querySelector(
-      ".bilisub-entry-icon"
+      ".bilisub-entry-icon",
     ) as HTMLElement | null;
     const text = this.downloadBtn.querySelector(
-      ".bilisub-entry-text"
+      ".bilisub-entry-text",
     ) as HTMLElement | null;
 
     if (mode === "menu") {
@@ -1349,7 +1399,7 @@ class BiliSub {
     }
 
     const isVisible = this.subtitlePanel.classList.contains(
-      "bilisub-panel-visible"
+      "bilisub-panel-visible",
     );
 
     if (isVisible) {
@@ -1500,19 +1550,19 @@ class BiliSub {
     this.actionRefreshBtn = document.createElement("button");
     this.actionRefreshBtn.textContent = "刷新";
     this.actionRefreshBtn.addEventListener("click", () =>
-      this.refreshSubtitles(true)
+      this.refreshSubtitles(true),
     );
 
     this.actionSummaryBtn = document.createElement("button");
     this.actionSummaryBtn.textContent = "AI 总结";
     this.actionSummaryBtn.addEventListener("click", () =>
-      this.showSummaryPlaceholder()
+      this.showSummaryPlaceholder(),
     );
 
     this.actionDownloadBtn = document.createElement("button");
     this.actionDownloadBtn.textContent = "下载";
     this.actionDownloadBtn.addEventListener("click", () =>
-      this.downloadCurrentSubtitle()
+      this.downloadCurrentSubtitle(),
     );
 
     const closeBtn = document.createElement("button");
@@ -1653,7 +1703,7 @@ class BiliSub {
       }
 
       button.addEventListener("click", () =>
-        this.selectSubtitleTrack(subtitle)
+        this.selectSubtitleTrack(subtitle),
       );
       this.subtitleTracksContainer?.appendChild(button);
     });
@@ -1669,7 +1719,7 @@ class BiliSub {
           const button = el as HTMLButtonElement;
           button.classList.toggle(
             "active",
-            button.dataset.subtitleId === String(subtitle.id)
+            button.dataset.subtitleId === String(subtitle.id),
           );
         });
     }
@@ -1689,24 +1739,17 @@ class BiliSub {
     try {
       const data = await BilibiliAPI.getSubtitle(
         subtitle.subtitle_url,
-        this.sessdata
+        this.sessdata,
       );
       this.subtitleCache.set(cacheKey, data);
       this.currentSubtitleData = data;
       this.renderSubtitleTimeline();
     } catch (error) {
-      console.error(
-        "加载字幕失败:",
-        error,
-        "url:",
-        subtitle.subtitle_url,
-        "lan:",
-        subtitle.lan
-      );
-      if (this.subtitleTimelineContainer) {
-        this.subtitleTimelineContainer.innerHTML =
-          '<div class="bilisub-empty">加载失败，请重试</div>';
+      if (this.handleSessdataInvalid(error)) {
+        return;
       }
+      console.error("加载字幕失败:", error);
+      this.showToast("加载字幕失败，请重试");
     }
   }
 
@@ -1731,7 +1774,7 @@ class BiliSub {
       const time = document.createElement("div");
       time.className = "bilisub-line-time";
       time.textContent = `${this.formatTime(line.from)} → ${this.formatTime(
-        line.to
+        line.to,
       )}`;
 
       const text = document.createElement("div");
@@ -1806,11 +1849,14 @@ class BiliSub {
       const list = await BilibiliAPI.getAvailableSubtitles(
         this.cid,
         this.bvid,
-        this.sessdata
+        this.sessdata,
       );
       this.availableSubtitles = list;
       return list;
     } catch (error) {
+      if (this.handleSessdataInvalid(error)) {
+        return [];
+      }
       console.error("获取字幕列表失败:", error);
       return [];
     }
