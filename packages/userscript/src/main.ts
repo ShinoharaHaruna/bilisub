@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BiliSub - 哔哩哔哩字幕下载工具
 // @namespace    https://github.com/ShinoharaHaruna/bilisub
-// @version      1.2.0
+// @version      1.2.1
 // @description  在哔哩哔哩页面直接下载字幕，支持AI字幕和普通字幕
 // @author       Shinohara Haruna
 // @match        *://*.bilibili.com/video/*
@@ -696,6 +696,7 @@ class BiliSub {
   private actionDownloadBtn: HTMLButtonElement | null = null;
   private actionSummaryBtn: HTMLButtonElement | null = null;
   private actionRefreshBtn: HTMLButtonElement | null = null;
+  private actionCopyBtn: HTMLButtonElement | null = null;
   private subtitleCache: Map<string, BilibiliSubtitle> = new Map();
   private availableSubtitles: SubtitleItem[] = [];
   private currentSubtitleItem: SubtitleItem | null = null;
@@ -1559,6 +1560,12 @@ class BiliSub {
       this.showSummaryPlaceholder(),
     );
 
+    this.actionCopyBtn = document.createElement("button");
+    this.actionCopyBtn.textContent = "复制";
+    this.actionCopyBtn.addEventListener("click", () =>
+      this.copyCurrentSubtitle(),
+    );
+
     this.actionDownloadBtn = document.createElement("button");
     this.actionDownloadBtn.textContent = "下载";
     this.actionDownloadBtn.addEventListener("click", () =>
@@ -1574,6 +1581,7 @@ class BiliSub {
 
     actions.appendChild(this.actionRefreshBtn);
     actions.appendChild(this.actionSummaryBtn);
+    actions.appendChild(this.actionCopyBtn);
     actions.appendChild(this.actionDownloadBtn);
     actions.appendChild(closeBtn);
 
@@ -1833,6 +1841,43 @@ class BiliSub {
 
   private showSummaryPlaceholder() {
     this.showToast("AI 总结开发中，敬请期待");
+  }
+
+  private async copyCurrentSubtitle() {
+    if (!this.currentSubtitleData) {
+      this.showToast("请先选择一个字幕轨道");
+      return;
+    }
+
+    const content = this.formatSubtitleContent(this.currentSubtitleData);
+    if (!content) {
+      this.showToast("该字幕轨道暂无内容");
+      return;
+    }
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(content);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = content;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const success = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        if (!success) {
+          throw new Error("execCommand copy failed");
+        }
+      }
+      this.showToast("字幕已复制到剪贴板");
+    } catch (error) {
+      console.error("复制字幕失败:", error);
+      this.showToast("复制失败，请手动复制");
+    }
   }
 
   private async getVideoInfo(): Promise<VideoInfo | null> {
